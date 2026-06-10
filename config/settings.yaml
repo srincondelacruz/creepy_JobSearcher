@@ -1,0 +1,89 @@
+# ─── API Keys (override with env vars — never commit real values) ───────────────
+azure_openai:
+  api_key: "${AZURE_OPENAI_API_KEY}"
+  endpoint: "${AZURE_OPENAI_ENDPOINT}"
+  deployment: "${AZURE_OPENAI_DEPLOYMENT_NAME}"      # e.g. gpt-4o-mini
+  api_version: "${AZURE_OPENAI_API_VERSION}"         # e.g. 2025-01-01-preview
+  # fast_deployment: "${AZURE_OPENAI_FAST_DEPLOYMENT}"  # optional cheaper deployment
+  max_tokens: 4096
+  temperature: 0.7
+
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  chat_id: "${TELEGRAM_CHAT_ID}"
+  # Comma-separated allowed user IDs (leave empty to allow anyone who starts the bot)
+  allowed_user_ids: "${TELEGRAM_ALLOWED_USER_IDS}"
+
+# ─── Obsidian Integration ────────────────────────────────────────────────────
+# Single profile note (legacy — still supported by the questionnaire generator).
+# If this file exists and is newer than config/profile.yaml, it takes priority.
+obsidian_profile_path: ""
+# Example: "/home/sergio/obsidian/vault/Profile.md"
+
+# Full vault scan (used by modules/memory/obsidian_memory.py and the graph's
+# load_context node). Recursively reads all .md notes for enriched context.
+obsidian_vault_path: ""
+# Example: "/home/sergio/obsidian/vault"
+obsidian:
+  cache_ttl_seconds: 3600        # re-scan the vault at most once per hour
+  max_notes: 100                 # cap total notes ingested
+  max_chars_per_note: 4000       # truncate long notes
+  max_total_chars: 40000         # hard ceiling on injected context
+  exclude_dirs:                  # folders skipped during the scan
+    - ".obsidian"
+    - ".trash"
+    - "templates"
+    - "Templates"
+    - "attachments"
+    - "Attachments"
+    - "assets"
+
+# ─── Graph (LangGraph) ───────────────────────────────────────────────────────
+graph:
+  checkpoint_db: "data/graph_memory.sqlite"  # MemorySaver / SqliteSaver persistence
+  recursion_limit: 25
+
+# ─── Storage ─────────────────────────────────────────────────────────────────
+storage:
+  db_path: "data/jobs.db"
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+logging:
+  level: "INFO"
+  file: "logs/agent.log"
+  rotation: "10 MB"
+  retention: "30 days"
+
+# ─── Scheduler ───────────────────────────────────────────────────────────────
+scheduler:
+  search_time: "09:00"
+  timezone: "Europe/Madrid"
+  enabled: true
+
+# ─── Scraping ────────────────────────────────────────────────────────────────
+scraping:
+  delay_min: 2.0
+  delay_max: 5.0
+  timeout: 30
+  max_retries: 3
+  use_playwright: false  # set true if BeautifulSoup fails on JS-heavy pages
+  user_agents:
+    - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# ─── URL Fetcher (on-demand offer analysis) ──────────────────────────────────
+fetcher:
+  prefer_playwright: true    # use headless browser first; fall back to requests
+  timeout: 30
+  wait_until: "networkidle"  # playwright load state
+  max_content_chars: 12000   # truncate extracted offer text
+  block_resources:           # speed up playwright by blocking heavy assets
+    - "image"
+    - "media"
+    - "font"
+
+# ─── Output ──────────────────────────────────────────────────────────────────
+output:
+  responses_dir: "data/responses"
+  default_format: "markdown"  # markdown | json | plain

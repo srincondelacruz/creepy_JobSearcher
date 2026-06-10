@@ -1,0 +1,72 @@
+search_keywords:
+  primary:
+    - "Data Engineer"
+    - "AI Developer"
+    - "AI Data Engineer"
+    - "Azure Data Engineer"
+    - "Databricks Engineer"
+    - "LLM Engineer"
+    - "Generative AI Engineer"
+  secondary:
+    - "Python Developer"
+    - "Machine Learning Engineer"
+    - "MLOps Engineer"
+    - "Data Scientist"
+    - "Big Data Engineer"
+    - "NLP Engineer"
+    - "AI Engineer"
+
+locations:
+  - name: "Madrid"
+    infojobs_province_id: 28
+    tecnoempleo_province_id: 28
+  - name: "Remoto"
+    is_remote: true
+  - name: "Teletrabajo"
+    is_remote: true
+  - name: "Híbrido"
+    is_hybrid: true
+  - name: "Alcobendas"
+    infojobs_province_id: 28
+  - name: "Getafe"
+    infojobs_province_id: 28
+  - name: "Leganés"
+    infojobs_province_id: 28
+
+high_priority_combos:
+  - keywords: ["Azure", "Databricks", "Python"]
+    score_bonus: 2
+  - keywords: ["LLM", "Python", "RAG"]
+    score_bonus: 2
+  - keywords: ["PySpark", "Azure"]
+    score_bonus: 1
+  - keywords: ["LangChain", "FastAPI"]
+    score_bonus: 1
+
+sources:
+  infojobs:
+    enabled: true
+    base_url: "https://www.infojobs.net"
+  tecnoempleo:
+    enabled: true
+    base_url: "https://www.tecnoempleo.com"
+  linkedin:
+    enabled: false
+    note: "LinkedIn scraping unreliable due to bot detection — disabled by default"
+
+exclude_keywords:
+  - "QA Tester"
+  - "Quality Assurance"
+  - "Soporte Técnico"
+  - "Helpdesk"
+  - "Help Desk"
+  - "Administrador de Sistemas"
+  - "Sys Admin"
+  - "SAP"
+  - "ABAP"
+  - "Mainframe"
+  - "COBOL"
+  - "Junior" # only exclude if salary is too low
+
+min_salary_eur: 22000
+max_job_age_days: 7
