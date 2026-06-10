@@ -334,7 +334,8 @@ Both scrapers use `requests` + `BeautifulSoup4`. If a site changes its HTML stru
 3. If JavaScript rendering is needed, set `use_playwright: true` in `settings.yaml`
    and install: `pip install playwright && playwright install chromium`
 
-LinkedIn scraping is disabled by default due to aggressive bot detection.
+LinkedIn bulk scraping is intentionally not supported (respects LinkedIn's Terms of Service).
+Individual job offer URLs are analyzed on-demand only when the user explicitly provides them.
 
 ---
 
