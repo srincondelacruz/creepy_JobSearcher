@@ -71,9 +71,11 @@ Respond:
   "priority": "high|medium|low",
   "strengths": ["...", "..."],
   "gaps": ["..."],
-  "reasoning": "<2-3 sentence explanation>",
+  "reasoning": "<2-3 sentence explanation, IN SPANISH>",
   "suggested_projects": ["<project names to highlight in application>"]
 }}
+
+All free-text fields (strengths, gaps, reasoning) must be written in Spanish.
 
 Scoring guide:
 - 9-10: near-perfect stack match (Azure + Databricks + Python, or LLM/RAG focus)
@@ -143,10 +145,13 @@ Analyze the fit between this offer and Sergio's profile. Return JSON:
   "strengths": ["<specific selling points for THIS offer, cite projects/metrics>"],
   "weaknesses": ["<honest gaps relative to THIS offer>"],
   "objections": [
-    {{"objection": "<what a recruiter might doubt>", "rebuttal": "<how to counter it>"}}
+    {{"objection": "<what a recruiter might doubt>", "rebuttal": "<the exact answer Sergio should give, written in FIRST PERSON as words he can say verbatim to the recruiter — e.g. 'Tengo...', 'En mi último proyecto...' — never about him in third person>"}}
   ],
-  "reasoning": "<3-4 sentences justifying the score>"
+  "reasoning": "<3-4 sentences justifying the score, IN SPANISH>"
 }}
+
+All free-text fields (role_summary, strengths, weaknesses, objections, reasoning)
+must be written in Spanish.
 
 Scoring guide:
 - 9-10: near-perfect stack (Azure + Databricks + Python, or LLM/RAG focus)
@@ -196,4 +201,6 @@ Produce a final application recommendation. Return JSON:
   "cv_tips": ["<concrete CV tailoring actions for THIS offer>"],
   "cover_letter_angle": "<one-paragraph angle/hook the cover letter should lead with>",
   "priority_projects": ["<project names to feature>"]
-}}"""
+}}
+
+All free-text fields (reasoning, cv_tips, cover_letter_angle) must be written in Spanish."""
