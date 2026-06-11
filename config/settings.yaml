@@ -59,6 +59,7 @@ scheduler:
   search_time: "09:00"
   timezone: "Europe/Madrid"
   enabled: true
+  notify_min_score: 6   # only Telegram-notify new jobs with fit_score >= this (unscored jobs always notify)
 
 # ─── Scraping ────────────────────────────────────────────────────────────────
 scraping:

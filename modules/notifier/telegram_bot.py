@@ -7,8 +7,10 @@ from typing import Optional
 from loguru import logger
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -52,6 +54,11 @@ class JobBot:
         self.responder = responder
         self.dry_run = dry_run
         self.agent_graph = agent_graph  # JobAgentGraph — enables /analizar
+        self.search_fn = None           # set via schedule_daily_search — enables /buscar
+        self._search_running = False
+        self.notify_min_score = float(
+            settings.get("scheduler", {}).get("notify_min_score", 6)
+        )
         self.app = Application.builder().token(token).build()
         self._register_handlers()
 
@@ -76,6 +83,7 @@ class JobBot:
         app.add_handler(CommandHandler("ayuda", self.cmd_ayuda))
         app.add_handler(CommandHandler("buscar", self.cmd_buscar))
         app.add_handler(CommandHandler("estado", self.cmd_estado))
+        app.add_handler(CallbackQueryHandler(self.on_status_button, pattern=r"^st:"))
         app.add_handler(CommandHandler("ofertas", self.cmd_ofertas))
 
         # /responder conversation
@@ -153,10 +161,26 @@ class JobBot:
         if self.dry_run:
             await update.message.reply_text("🧪 *Dry-run mode* — no real search triggered.", parse_mode=ParseMode.MARKDOWN)
             return
-        await update.message.reply_text("🔍 Lanzando búsqueda manual...")
-        # Trigger via bot context data — actual search runs in main scheduler
-        ctx.bot_data["manual_search_requested"] = True
-        await update.message.reply_text("✅ Búsqueda lanzada. Recibirás notificaciones de nuevas ofertas.")
+        if self.search_fn is None:
+            await update.message.reply_text("❌ Búsqueda no configurada (arranca con `agent.py serve`).")
+            return
+        if self._search_running:
+            await update.message.reply_text("⏳ Ya hay una búsqueda en curso, espera a que termine.")
+            return
+        await update.message.reply_text(
+            "🔍 Lanzando búsqueda manual... puede tardar 10-20 min "
+            "(2 portales × 7 keywords + scoring). Te iré avisando de cada oferta nueva."
+        )
+        try:
+            total, notified = await self._run_search_and_notify()
+            await update.message.reply_text(
+                f"✅ Búsqueda completada — {total} ofertas nuevas, "
+                f"{notified} notificadas (encaje ≥ {self.notify_min_score:.0f}). "
+                f"El resto está en la base de datos: /estado."
+            )
+        except Exception as e:
+            logger.error(f"/buscar failed: {e}")
+            await update.message.reply_text(f"❌ Error en la búsqueda: {e}")
 
     async def cmd_estado(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._guard(update):
@@ -309,8 +333,9 @@ class JobBot:
                 dry_run=False,
             )
             for chunk in format_telegram(state):
-                await update.message.reply_text(
-                    chunk, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True
+                await self._safe_reply(
+                    update.message, chunk,
+                    parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True,
                 )
         except Exception as e:
             logger.error(f"/analizar failed: {e}")
@@ -324,39 +349,159 @@ class JobBot:
 
     # ── Notification sender (called externally by scheduler) ─────────────────
 
-    async def send_job_notification(self, job: dict) -> None:
-        """Send a new-job notification to the configured chat."""
-        chat_id = self._resolve(
+    @staticmethod
+    async def _safe_reply(message, text: str, **kwargs) -> None:
+        """reply_text with Markdown; on parse failure, resend as plain text."""
+        try:
+            await message.reply_text(text, **kwargs)
+        except BadRequest as e:
+            if "parse entities" not in str(e).lower():
+                raise
+            logger.warning(f"Markdown parse failed, resending plain: {e}")
+            kwargs.pop("parse_mode", None)
+            await message.reply_text(text, **kwargs)
+
+    async def _safe_send(self, chat_id: int, text: str, **kwargs) -> None:
+        """bot.send_message with Markdown; on parse failure, resend as plain text."""
+        try:
+            await self.app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        except BadRequest as e:
+            if "parse entities" not in str(e).lower():
+                raise
+            logger.warning(f"Markdown parse failed, resending plain: {e}")
+            kwargs.pop("parse_mode", None)
+            await self.app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+
+    def _notify_chat_id(self) -> str:
+        return self._resolve(
             self.app.bot_data.get("chat_id", "")
             or os.environ.get("TELEGRAM_CHAT_ID", "")
         )
+
+    async def send_alert(self, text: str) -> None:
+        """Send a plain operational alert (scraper health etc.) to the configured chat."""
+        chat_id = self._notify_chat_id()
+        if not chat_id or self.dry_run:
+            logger.info(f"[DRY-RUN] Would alert: {text}")
+            return
+        try:
+            await self.app.bot.send_message(chat_id=int(chat_id), text=text)
+        except Exception as e:
+            logger.error(f"Telegram alert error: {e}")
+
+    async def send_job_notification(self, job: dict) -> None:
+        """Send a new-job notification to the configured chat."""
+        chat_id = self._notify_chat_id()
         if not chat_id or self.dry_run:
             logger.info(f"[DRY-RUN] Would notify: {job.get('title')} @ {job.get('company')}")
             return
         try:
-            await self.app.bot.send_message(
-                chat_id=int(chat_id),
-                text=self._format_job_message(job),
+            await self._safe_send(
+                int(chat_id),
+                self._format_job_message(job),
                 parse_mode=ParseMode.MARKDOWN,
                 disable_web_page_preview=True,
+                reply_markup=self._status_keyboard(job.get("id")),
             )
         except Exception as e:
             logger.error(f"Telegram notification error: {e}")
 
+    @staticmethod
+    def _status_keyboard(job_id) -> Optional[InlineKeyboardMarkup]:
+        if job_id is None:
+            return None
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Aplicada", callback_data=f"st:aplicada:{job_id}"),
+            InlineKeyboardButton("👀 Revisada", callback_data=f"st:revisada:{job_id}"),
+            InlineKeyboardButton("🗑 Descartar", callback_data=f"st:descartada:{job_id}"),
+        ]])
+
+    async def on_status_button(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if not self._allowed(query.from_user.id):
+            await query.answer("⛔ No autorizado")
+            return
+        _, status, job_id = query.data.split(":")
+        if status == "noop":
+            await query.answer()
+            return
+        try:
+            self.db.update_job(int(job_id), status=status)
+        except Exception as e:
+            logger.error(f"Status button failed ({query.data}): {e}")
+            await query.answer("❌ Error actualizando estado")
+            return
+        labels = {"aplicada": "✅ Aplicada", "revisada": "👀 Revisada", "descartada": "🗑 Descartada"}
+        await query.answer(f"Marcada como {status}")
+        # Replace buttons with the chosen state so the message shows the decision
+        await query.edit_message_reply_markup(
+            InlineKeyboardMarkup([[InlineKeyboardButton(labels.get(status, status), callback_data="st:noop:0")]])
+        )
+
     def _format_job_message(self, job: dict) -> str:
         score = job.get("fit_score")
         score_str = f"⭐ *Encaje: {score}/10*" if score else ""
+        reason = (job.get("fit_reason") or "").strip()
+        reason_str = f"💡 {reason[:300]}" if reason else ""
         salary = job.get("salary_raw") or "No indicado"
         location = job.get("location") or ("🌐 Remoto" if job.get("remote") else "No indicado")
-        return (
-            f"🆕 *{job['title']}*\n"
-            f"🏢 {job.get('company', '?')}\n"
-            f"📍 {location}\n"
-            f"💶 {salary}\n"
-            f"{score_str}\n"
-            f"🔗 {job.get('url', '')}\n"
-            f"📅 Fuente: {job.get('source', '?')}"
-        ).strip()
+        lines = [
+            f"🆕 *{job['title']}*",
+            f"🏢 {job.get('company', '?')}",
+            f"📍 {location}",
+            f"💶 {salary}",
+            score_str,
+            reason_str,
+            f"🔗 {job.get('url', '')}",
+            f"📅 Fuente: {job.get('source', '?')}",
+        ]
+        return "\n".join(l for l in lines if l)
+
+    # ── Scheduled search (PTB JobQueue — runs inside the bot's event loop) ───
+
+    def schedule_daily_search(self, search_fn, at) -> None:
+        """Run search_fn daily at the given datetime.time and notify new jobs.
+
+        search_fn: sync callable returning a list of new job dicts.
+        """
+        self.search_fn = search_fn
+
+        async def _daily_search(ctx) -> None:
+            logger.info("Scheduled search starting...")
+            try:
+                total, notified = await self._run_search_and_notify()
+                logger.info(f"Scheduled search done — {total} new jobs, {notified} notified")
+            except Exception as e:
+                logger.error(f"Scheduled search failed: {e}")
+
+        self.app.job_queue.run_daily(_daily_search, time=at, name="daily_search")
+
+    async def _run_search_and_notify(self) -> tuple[int, int]:
+        """Run the configured search off-loop, notify high-fit new jobs.
+
+        Returns (total_new, notified). Jobs scoring below notify_min_score stay
+        in the DB (visible via /estado) without a Telegram message; jobs with
+        no score (scoring failed) are always notified.
+        """
+        if self.search_fn is None:
+            raise RuntimeError("search_fn not configured")
+        if self._search_running:
+            raise RuntimeError("search already running")
+        self._search_running = True
+        try:
+            new_jobs, warnings = await asyncio.to_thread(self.search_fn)
+            for w in warnings:
+                await self.send_alert(f"⚠️ {w}")
+            notified = 0
+            for job in new_jobs:
+                score = job.get("fit_score")
+                if score is not None and score < self.notify_min_score:
+                    continue
+                await self.send_job_notification(job)
+                notified += 1
+            return len(new_jobs), notified
+        finally:
+            self._search_running = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

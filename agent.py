@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import click
@@ -160,9 +161,11 @@ def score(offer, title, company):
 def search(dry_run, no_score, keyword, source):
     """Run a manual job search across configured sources."""
     settings, profile, keywords_cfg, db, responder = _load_all(BASE_DIR)
-    _run_search(settings, profile, keywords_cfg, db, responder,
-                dry_run=dry_run, score_jobs=not no_score,
-                keyword_override=keyword, source_override=source)
+    new_jobs, warnings = _run_search(settings, profile, keywords_cfg, db, responder,
+                                     dry_run=dry_run, score_jobs=not no_score,
+                                     keyword_override=keyword, source_override=source)
+    for w in warnings:
+        console.print(f"[red]⚠ {w}[/red]")
 
 
 # ── analyze ───────────────────────────────────────────────────────────────────
@@ -210,8 +213,9 @@ def serve(dry_run):
     """Start Telegram bot + APScheduler background search + LangGraph /analizar."""
     settings, profile, keywords_cfg, db, responder = _load_all(BASE_DIR)
 
+    import datetime as dt
+
     from modules.notifier.telegram_bot import JobBot
-    from apscheduler.schedulers.background import BackgroundScheduler
     import pytz
 
     # Build the LangGraph agent so /analizar works inside the bot
@@ -229,14 +233,11 @@ def serve(dry_run):
         time_str = sched_cfg.get("search_time", "09:00")
         hour, minute = map(int, time_str.split(":"))
 
-        scheduler = BackgroundScheduler(timezone=tz)
-        scheduler.add_job(
+        bot.schedule_daily_search(
             lambda: _run_search(settings, profile, keywords_cfg, db, responder,
                                 dry_run=dry_run, score_jobs=True),
-            "cron", hour=hour, minute=minute,
-            id="daily_search",
+            at=dt.time(hour, minute, tzinfo=tz),
         )
-        scheduler.start()
         console.print(f"[green]Scheduler active — daily search at {time_str} {tz}[/green]")
 
     if dry_run:
@@ -288,7 +289,13 @@ def status():
 
 def _run_search(settings, profile, keywords_cfg, db, responder,
                 dry_run=False, score_jobs=True,
-                keyword_override=None, source_override=None):
+                keyword_override=None, source_override=None) -> tuple[list[dict], list[str]]:
+    """Run all scrapers. Returns (new_jobs, health_warnings).
+
+    A scraper that yields 0 raw listings across every keyword is almost
+    certainly broken (site redesign, ban) — that produces a warning so the
+    failure is loud instead of looking like a quiet day.
+    """
     from modules.scraper.infojobs import InfojobsScraper
     from modules.scraper.tecnoempleo import TecnoempleoScraper
     from modules.utils import should_exclude
@@ -305,20 +312,27 @@ def _run_search(settings, profile, keywords_cfg, db, responder,
 
     if not scrapers:
         logger.warning("No scrapers enabled")
-        return
+        return [], ["No hay scrapers habilitados en config/keywords.yaml"]
 
     search_terms = [keyword_override] if keyword_override else keywords_cfg.get("search_keywords", {}).get("primary", [])
 
-    new_count = 0
-    for scraper in scrapers:
+    def _run_one_scraper(scraper) -> tuple[list[dict], int]:
+        """Search all keywords on one scraper; return (new jobs, raw listing count)."""
+        found: list[dict] = []
+        raw_count = 0
         for keyword in search_terms:
             try:
                 listings = scraper.search(keyword, "Madrid")
+                raw_count += len(listings)
                 for listing in listings:
                     job = listing.to_dict()
 
                     # Filter
                     if should_exclude(job["title"], job.get("salary_min"), keywords_cfg):
+                        continue
+
+                    # Skip already-known jobs BEFORE expensive detail fetch + LLM scoring
+                    if not dry_run and db.has_job(job.get("url", ""), job["title"], job.get("company", "")):
                         continue
 
                     # Fetch details if description is empty
@@ -346,16 +360,34 @@ def _run_search(settings, profile, keywords_cfg, db, responder,
 
                     is_new, job_id = db.add_job(job)
                     if is_new:
-                        new_count += 1
+                        job["id"] = job_id
+                        found.append(job)
                         logger.info(
                             f"New job: [{job.get('fit_score', '?')}/10] "
                             f"{job['title']} @ {job['company']}"
                         )
             except Exception as e:
                 logger.error(f"Search error ({scraper.SOURCE}, {keyword!r}): {e}")
+        return found, raw_count
+
+    # Scrapers hit different domains, so running them in parallel keeps
+    # per-domain anti-ban delays intact while halving total wall time.
+    new_jobs: list[dict] = []
+    warnings: list[str] = []
+    with ThreadPoolExecutor(max_workers=len(scrapers)) as pool:
+        for scraper, (found, raw_count) in zip(scrapers, pool.map(_run_one_scraper, scrapers)):
+            new_jobs.extend(found)
+            if raw_count == 0:
+                msg = (
+                    f"{scraper.SOURCE} devolvió 0 resultados en {len(search_terms)} "
+                    f"búsquedas — scraper posiblemente roto (rediseño web o bloqueo)"
+                )
+                logger.warning(msg)
+                warnings.append(msg)
 
     if not dry_run:
-        logger.info(f"Search complete — {new_count} new jobs added")
+        logger.info(f"Search complete — {len(new_jobs)} new jobs added")
+    return new_jobs, warnings
 
 
 def _print_responses(responses: list[dict]) -> None:

@@ -75,6 +75,14 @@ class Database:
 
     # ── Job CRUD ──────────────────────────────────────────────────────────────
 
+    def has_job(self, url: str, title: str = "", company: str = "") -> bool:
+        """True if a job with this fingerprint already exists."""
+        fp = _job_fingerprint(url or "", title or "", company or "")
+        with self._conn() as conn:
+            return conn.execute(
+                "SELECT 1 FROM jobs WHERE fingerprint = ?", (fp,)
+            ).fetchone() is not None
+
     def add_job(self, job: dict) -> tuple[bool, int]:
         """Insert job. Returns (is_new, job_id). Skips silently if duplicate."""
         fp = _job_fingerprint(job.get("url", ""), job.get("title", ""), job.get("company", ""))
