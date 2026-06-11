@@ -1,11 +1,13 @@
 """Infojobs.net scraper.
 
-Infojobs renders most content server-side; BeautifulSoup works for the initial
-listing page. If the selectors break (Infojobs redesigns frequently), set
-`use_playwright: true` in settings.yaml and install playwright.
+Infojobs is a React SPA: the listing HTML is empty, but the full search state
+(offers incl. complete descriptions) ships embedded as
+`window.__INITIAL_PROPS__ = JSON.parse("...")`. We parse that JSON directly;
+the old BeautifulSoup selectors remain as fallback.
 
-Province IDs used: Madrid = 28.
+Province IDs are Infojobs-internal (NOT postal codes): Madrid = 33.
 """
+import json
 import re
 import urllib.parse
 from typing import Optional
@@ -16,13 +18,14 @@ from .base_scraper import BaseScraper, JobListing, parse_salary_range
 
 
 _PROVINCE_MAP = {
-    "madrid": "28",
-    "barcelona": "8",
-    "valencia": "46",
-    "sevilla": "41",
+    "madrid": "33",  # verified live 2026-06
     "remoto": "",
     "teletrabajo": "",
 }
+
+_INITIAL_PROPS_RE = re.compile(
+    r'window\.__INITIAL_PROPS__\s*=\s*JSON\.parse\(("(?:[^"\\]|\\.)*")\)'
+)
 
 _REMOTE_TERMS = {"teletrabajo", "remoto", "remote", "100% remoto", "trabajo desde casa"}
 
@@ -43,13 +46,15 @@ class InfojobsScraper(BaseScraper):
             resp = self._get(page_url)
             if not resp:
                 break
-            soup = self._parse_html(resp.text)
-            listings = self._parse_listing_page(soup)
+            listings = self._parse_json_offers(resp.text)
+            if listings is None:  # JSON blob missing — fall back to HTML selectors
+                soup = self._parse_html(resp.text)
+                listings = self._parse_listing_page(soup)
             if not listings:
                 break
             results.extend(listings)
             # stop after 3 pages to be respectful
-            if page >= 3 or not self._has_next_page(soup):
+            if page >= 3:
                 break
             page += 1
             self._sleep()
@@ -57,7 +62,8 @@ class InfojobsScraper(BaseScraper):
         return results
 
     def get_details(self, listing: JobListing) -> JobListing:
-        if not listing.url:
+        # JSON offers already carry the full description — nothing to fetch
+        if listing.description or not listing.url:
             return listing
         self._sleep()
         resp = self._get(listing.url)
@@ -70,6 +76,43 @@ class InfojobsScraper(BaseScraper):
         if listing.salary_raw and listing.salary_min is None:
             listing.salary_min, listing.salary_max = parse_salary_range(listing.salary_raw)
         return listing
+
+    # ── Embedded-JSON parsing (primary path, 2026 SPA layout) ────────────────
+
+    def _parse_json_offers(self, html: str) -> Optional[list[JobListing]]:
+        """Extract offers from window.__INITIAL_PROPS__. None if blob absent."""
+        m = _INITIAL_PROPS_RE.search(html)
+        if not m:
+            return None
+        try:
+            data = json.loads(json.loads(m.group(1)))
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"[Infojobs] __INITIAL_PROPS__ parse failed: {e}")
+            return None
+
+        listings: list[JobListing] = []
+        for o in data.get("offers", []):
+            link = o.get("link", "")
+            if link.startswith("//"):
+                link = "https:" + link
+            teleworking = (o.get("teleworking") or "").lower()
+            salary_raw = o.get("salaryDescription") or ""
+            salary_min, salary_max = (
+                parse_salary_range(salary_raw) if salary_raw else (None, None)
+            )
+            listings.append(JobListing(
+                source=self.SOURCE,
+                title=o.get("title", "").strip(),
+                company=o.get("companyName", "").strip(),
+                url=self._abs(link),
+                location=o.get("city", ""),
+                description=(o.get("description") or "")[:4000],
+                salary_raw=salary_raw,
+                salary_min=salary_min,
+                salary_max=salary_max,
+                remote="teletrabajo" in teleworking or "remoto" in teleworking,
+            ))
+        return [j for j in listings if j.title]
 
     # ── URL builders ──────────────────────────────────────────────────────────
 
@@ -86,8 +129,8 @@ class InfojobsScraper(BaseScraper):
         elif loc_lower in {"remoto", "teletrabajo"}:
             params["telecommuting"] = "1"
         else:
-            # try numeric Madrid by default
-            params["provinceIds"] = "28"
+            # default to Madrid
+            params["provinceIds"] = "33"
 
         qs = urllib.parse.urlencode(params)
         return f"{self.BASE_URL}/jobsearch/search-results/list.xhtml?{qs}"

@@ -80,16 +80,17 @@ class TecnoempleoScraper(BaseScraper):
     def _parse_listing_page(self, soup) -> list[JobListing]:
         listings: list[JobListing] = []
 
-        # Primary selector: articles with offer cards
+        # Primary selector: offer cards (2026 layout: clickable bordered divs)
         cards = (
-            soup.select("article.p-3")
+            soup.select("div.p-3.border.rounded")
+            or soup.select("article.p-3")
             or soup.select(".oferta-empleo")
             or soup.select("div.row.py-3.border-bottom")
         )
 
         if not cards:
-            # Fallback: scan for offer links
-            for a in soup.find_all("a", href=re.compile(r"/oferta-trabajo-")):
+            # Fallback: scan for offer links (offer URLs end in /rf-<hex>)
+            for a in soup.find_all("a", href=re.compile(r"/rf-[0-9a-f]+")):
                 title = a.get_text(strip=True)
                 url = self._abs(a.get("href", ""))
                 if title and url:
@@ -114,30 +115,29 @@ class TecnoempleoScraper(BaseScraper):
         title = title_el.get_text(strip=True) if title_el else ""
         url = self._abs(title_el.get("href", "")) if title_el else ""
 
-        # Company
+        # Company (2026 layout: muted link right under the title)
         company_el = (
-            card.select_one(".text-gray-700")
+            card.select_one("a.text-primary.link-muted")
             or card.select_one(".empresa")
             or card.select_one("span.company")
         )
         company = company_el.get_text(strip=True) if company_el else ""
 
-        # Location — Tecnoempleo usually shows it in a <span> with an icon
-        location_parts: list[str] = []
-        for span in card.select("span"):
-            text = span.get_text(strip=True)
-            if "Madrid" in text or "Remoto" in text or "Teletrabajo" in text:
-                location_parts.append(text)
+        # Location — <b> holds it clean ("100% remoto", "Madrid"); spans are noisy
+        location = ""
+        for el in card.select("b") + card.select("span"):
+            text = el.get_text(strip=True)
+            low = text.lower()
+            if any(t in low for t in ("madrid", "remoto", "teletrabajo", "híbrido", "hibrido")):
+                location = re.split(r"\s*-\s*|\d{2}/\d{2}/\d{4}", text)[0].strip()
                 break
-        location = location_parts[0] if location_parts else ""
 
-        # Salary
-        salary_raw = ""
-        for span in card.select("span, small"):
-            text = span.get_text(strip=True)
-            if "€" in text or "eur" in text.lower() or "salario" in text.lower():
-                salary_raw = text
-                break
+        # Salary — extract "39.000€ - 45.000€" style ranges from card text
+        m = re.search(
+            r"\d{2,3}(?:\.\d{3})?\s*€(?:\s*-\s*\d{2,3}(?:\.\d{3})?\s*€)?(?:\s*b/a)?",
+            card.get_text(" ", strip=True),
+        )
+        salary_raw = m.group(0) if m else ""
         salary_min, salary_max = parse_salary_range(salary_raw) if salary_raw else (None, None)
 
         remote = any(t in location.lower() for t in _REMOTE_TERMS)
@@ -156,14 +156,23 @@ class TecnoempleoScraper(BaseScraper):
 
     def _extract_description(self, soup) -> str:
         desc_el = (
-            soup.select_one("#descripcion-oferta")
+            soup.select_one("div.fs--16.text-gray-800")  # 2026 layout
+            or soup.select_one("#descripcion-oferta")
             or soup.select_one(".descripcion-oferta")
             or soup.select_one("div.job-description")
             or soup.select_one("section.descripcion")
         )
         if desc_el:
             return desc_el.get_text(separator="\n", strip=True)[:4000]
-        return ""
+        # Heuristic fallback: shortest container with offer-like long text
+        best = ""
+        for d in soup.find_all(["div", "section"]):
+            t = d.get_text(separator="\n", strip=True)
+            low = t.lower()
+            if 500 < len(t) < 8000 and ("funciones" in low or "requisitos" in low or "experiencia" in low):
+                if not best or len(t) < len(best):
+                    best = t
+        return best[:4000]
 
     def _extract_salary_detail(self, soup) -> str:
         for el in soup.select("li, span, div"):
