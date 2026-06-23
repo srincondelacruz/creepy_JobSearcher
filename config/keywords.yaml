@@ -79,5 +79,6 @@ exclude_keywords:
   - "Mainframe"
   - "COBOL"
 
+max_listings_per_run: 30
 min_salary_eur: 22000
 max_job_age_days: 7

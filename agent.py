@@ -330,11 +330,16 @@ def _run_search(settings, profile, keywords_cfg, db, responder,
             + kw_cfg.get("junior", [])
         )
 
+    max_raw = keywords_cfg.get("max_listings_per_run", 30)
+
     def _run_one_scraper(scraper) -> tuple[list[dict], int]:
         """Search all keywords on one scraper; return (new jobs, raw listing count)."""
         found: list[dict] = []
         raw_count = 0
         for keyword in search_terms:
+            if raw_count >= max_raw:
+                logger.info(f"[{scraper.SOURCE}] Cap {max_raw} raw listings reached — stopping")
+                break
             try:
                 listings = scraper.search(keyword, "Madrid")
                 raw_count += len(listings)
