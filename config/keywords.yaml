@@ -15,6 +15,14 @@ search_keywords:
     - "Big Data Engineer"
     - "NLP Engineer"
     - "AI Engineer"
+  junior:
+    - "Junior Data Engineer"
+    - "Junior AI Developer"
+    - "Junior Python Developer"
+    - "Junior Machine Learning"
+    - "Becario Data Engineer"
+    - "Prácticas Data"
+    - "Internship Data Engineer"
 
 locations:
   - name: "Madrid"
@@ -50,6 +58,10 @@ sources:
   tecnoempleo:
     enabled: true
     base_url: "https://www.tecnoempleo.com"
+  joinrs:
+    enabled: true
+    base_url: "https://www.joinrs.com"
+    note: "Requires JOINRS_EMAIL + JOINRS_PASSWORD in .env; uses Playwright"
   linkedin:
     enabled: false
     note: "LinkedIn scraping unreliable due to bot detection — disabled by default"
@@ -66,7 +78,6 @@ exclude_keywords:
   - "ABAP"
   - "Mainframe"
   - "COBOL"
-  - "Junior" # only exclude if salary is too low
 
 min_salary_eur: 22000
 max_job_age_days: 7

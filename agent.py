@@ -298,6 +298,7 @@ def _run_search(settings, profile, keywords_cfg, db, responder,
     """
     from modules.scraper.infojobs import InfojobsScraper
     from modules.scraper.tecnoempleo import TecnoempleoScraper
+    from modules.scraper.joinrs import JoinrsScraper
     from modules.utils import should_exclude
 
     scraping_cfg = settings.get("scraping", {})
@@ -309,12 +310,26 @@ def _run_search(settings, profile, keywords_cfg, db, responder,
         scrapers.append(InfojobsScraper(scraping_cfg))
     if source_override in (None, "tecnoempleo") and sources_cfg.get("tecnoempleo", {}).get("enabled", True):
         scrapers.append(TecnoempleoScraper(scraping_cfg))
+    if source_override in (None, "joinrs") and sources_cfg.get("joinrs", {}).get("enabled", True):
+        import os
+        if os.getenv("JOINRS_EMAIL") and os.getenv("JOINRS_PASSWORD"):
+            scrapers.append(JoinrsScraper(scraping_cfg))
+        else:
+            logger.debug("[Joinrs] Skipped — JOINRS_EMAIL / JOINRS_PASSWORD not set")
 
     if not scrapers:
         logger.warning("No scrapers enabled")
         return [], ["No hay scrapers habilitados en config/keywords.yaml"]
 
-    search_terms = [keyword_override] if keyword_override else keywords_cfg.get("search_keywords", {}).get("primary", [])
+    kw_cfg = keywords_cfg.get("search_keywords", {})
+    if keyword_override:
+        search_terms = [keyword_override]
+    else:
+        search_terms = (
+            kw_cfg.get("primary", [])
+            + kw_cfg.get("secondary", [])
+            + kw_cfg.get("junior", [])
+        )
 
     def _run_one_scraper(scraper) -> tuple[list[dict], int]:
         """Search all keywords on one scraper; return (new jobs, raw listing count)."""
