@@ -327,7 +327,6 @@ def _run_search(settings, profile, keywords_cfg, db, responder,
     else:
         search_terms = (
             kw_cfg.get("primary", [])
-            + kw_cfg.get("secondary", [])
             + kw_cfg.get("junior", [])
         )
 
